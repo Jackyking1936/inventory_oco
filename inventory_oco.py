@@ -4,10 +4,11 @@
 
 # %%
 import sys
-import pickle 
+import pickle
+import pandas as pd
 from pathlib import Path
 from fubon_neo.sdk import FubonSDK, Order
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineEdit, QGridLayout, QMessageBox
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineEdit, QGridLayout, QVBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QPlainTextEdit
 
 class LoginForm(QWidget):
 	def __init__(self):
@@ -69,6 +70,7 @@ class LoginForm(QWidget):
 				self.lineEdit_acc.setText(user_info_dict['target_account'])
 
 	def check_password(self):
+		global active_account, sdk
 		msg = QMessageBox()
 		
 		fubon_id = self.lineEdit_id.text()
@@ -107,8 +109,25 @@ class LoginForm(QWidget):
 class MainApp(QWidget):
 	def __init__(self):
 		super().__init__()
+		self.setWindowTitle("Inventory with OCO")
 		self.resize(800, 600)
-		label=QLabel("Main APP", self)
+
+		layout = QVBoxLayout()
+
+		# label=QLabel("Main APP", self)
+		self.tablewidget = QTableWidget(5, 4)
+		self.log_text = QPlainTextEdit()
+		self.log_text.setReadOnly(True)
+
+		layout.addWidget(self.tablewidget)
+		layout.addWidget(self.log_text)
+		self.setLayout(layout)
+
+		self.log_text.appendPlainText("login success, 現在使用帳號: {}".format(active_account.account))
+		self.log_text.appendPlainText("抓取庫存資訊...")
+		self.inventories = sdk.accounting.inventories(active_account)
+
+		# print(inventories)
 
 
 sdk = FubonSDK()
