@@ -109,13 +109,18 @@ class LoginForm(QWidget):
 class MainApp(QWidget):
 	def __init__(self):
 		super().__init__()
+
+		self.table_header = ['股票名稱', '股票代號', '類別', '庫存股數', '庫存均價', '現價', '停損', '停利', '損益試算', '獲利率%']
+
 		self.setWindowTitle("Inventory with OCO")
-		self.resize(800, 600)
+		self.resize(1200, 800)
 
 		layout = QVBoxLayout()
 
 		# label=QLabel("Main APP", self)
-		self.tablewidget = QTableWidget(5, 4)
+		self.tablewidget = QTableWidget(0, len(self.table_header))
+		self.tablewidget.setHorizontalHeaderLabels([f'{item}' for item in self.table_header])
+		# self.tablewidget.resizeColumnsToContents()
 		self.log_text = QPlainTextEdit()
 		self.log_text.setReadOnly(True)
 
@@ -125,9 +130,86 @@ class MainApp(QWidget):
 
 		self.log_text.appendPlainText("login success, 現在使用帳號: {}".format(active_account.account))
 		self.log_text.appendPlainText("抓取庫存資訊...")
-		self.inventories = sdk.accounting.inventories(active_account)
 
-		# print(inventories)
+		self.inventories = {}
+		self.unrealized_pnl = {}
+		self.table_init()
+		header = self.tablewidget.horizontalHeader()       
+		header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+	
+	def table_init(self):
+		inv_res = sdk.accounting.inventories(active_account)
+		if inv_res.is_success:
+			self.log_text.appendPlainText("庫存抓取成功")
+			inv_data = inv_res.data
+			for inv in inv_data:
+				self.inventories[(inv.stock_no, str(inv.order_type))] = inv
+		else:
+			self.log_text.appendPlainText("庫存抓取失敗")
+
+		upnl_res = sdk.accounting.unrealized_gains_and_loses(active_account)
+		if upnl_res.is_success:
+			self.log_text.appendPlainText("未實現損益抓取成功")
+			upnl_data = upnl_res.data
+			for upnl in upnl_data:
+				self.unrealized_pnl[(upnl.stock_no, str(upnl.order_type))] = upnl
+		else:
+			self.log_text.appendPlainText("未實現損益抓取失敗")
+
+		sdk.init_realtime() # 建立行情連線
+		self.reststock = sdk.marketdata.rest_client.stock
+
+		i=0
+		for key, value in self.inventories.items():
+			ticker_res = self.reststock.intraday.ticker(symbol=key[0])
+			print(ticker_res['name'])
+			row = self.tablewidget.rowCount()
+			self.tablewidget.insertRow(row)
+
+			for j in range(len(self.table_header)):
+				if self.table_header[j] == '股票名稱':
+					item = QTableWidgetItem(ticker_res['name'])
+					self.tablewidget.setItem(i, j, item)
+				elif self.table_header[j] == '股票代號':
+					item = QTableWidgetItem(ticker_res['symbol'])
+					self.tablewidget.setItem(i, j, item)
+				elif self.table_header[j] == '類別':
+					# print(str(self.inventories[i].order_type))
+					item = QTableWidgetItem(str(value.order_type).split('.')[-1])
+					self.tablewidget.setItem(i, j, item)
+				elif self.table_header[j] == '庫存股數':
+					item = QTableWidgetItem(str(value.today_qty))
+					self.tablewidget.setItem(i, j, item)
+				elif self.table_header[j] == '庫存均價':
+					item = QTableWidgetItem(str(round(self.unrealized_pnl[key].cost_price+0.00000001, 2)))
+					self.tablewidget.setItem(i, j, item)
+				elif self.table_header[j] == '現價':
+					item = QTableWidgetItem(str(ticker_res['previousClose']))
+					self.tablewidget.setItem(i, j, item)
+				elif self.table_header[j] == '損益試算':
+					cur_upnl = 0
+					if self.unrealized_pnl[key].unrealized_profit > self.unrealized_pnl[key].unrealized_loss:
+						cur_upnl = self.unrealized_pnl[key].unrealized_profit
+					else:
+						cur_upnl = -(self.unrealized_pnl[key].unrealized_loss)
+					item = QTableWidgetItem(str(cur_upnl))
+					self.tablewidget.setItem(i, j, item)
+				elif self.table_header[j] == '獲利率%':
+					cur_upnl = 0
+					if self.unrealized_pnl[key].unrealized_profit > self.unrealized_pnl[key].unrealized_loss:
+						cur_upnl = self.unrealized_pnl[key].unrealized_profit
+					else:
+						cur_upnl = -(self.unrealized_pnl[key].unrealized_loss)
+					stock_cost = value.today_qty*self.unrealized_pnl[key].cost_price
+					return_rate = cur_upnl/stock_cost*100
+					item = QTableWidgetItem(str(round(return_rate+0.0000001, 2))+'%')
+					self.tablewidget.setItem(i, j, item)
+				
+			i+=1
+		
+		self.log_text.appendPlainText('庫存資訊初始化完成')	
+
+		# print(self.inventories[i].stock_no)
 
 
 sdk = FubonSDK()
