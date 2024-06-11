@@ -4,7 +4,7 @@ from PySide6.QtGui import *
 from PySide6.QtCore import *
 import sys
 import os
-os.chdir(os.path.dirname(__file__))
+# os.chdir(os.path.dirname(__file__))
  
 class QTableWidgetDemo(QMainWindow):
     addCount = 0

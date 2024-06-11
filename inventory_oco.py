@@ -5,10 +5,13 @@
 # %%
 import sys
 import pickle
+import json
 import pandas as pd
 from pathlib import Path
 from fubon_neo.sdk import FubonSDK, Order
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineEdit, QGridLayout, QVBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QPlainTextEdit
+
+from PySide6.QtGui import QBrush, QColor, QFont, QTextCursor
 
 class LoginForm(QWidget):
 	def __init__(self):
@@ -110,17 +113,17 @@ class MainApp(QWidget):
 	def __init__(self):
 		super().__init__()
 
+		# 庫存表表頭
 		self.table_header = ['股票名稱', '股票代號', '類別', '庫存股數', '庫存均價', '現價', '停損', '停利', '損益試算', '獲利率%']
 
 		self.setWindowTitle("Inventory with OCO")
-		self.resize(1200, 800)
+		self.resize(1200, 600)
 
+		# 製作上下排列layout上為庫存表，下為log資訊
 		layout = QVBoxLayout()
 
-		# label=QLabel("Main APP", self)
 		self.tablewidget = QTableWidget(0, len(self.table_header))
 		self.tablewidget.setHorizontalHeaderLabels([f'{item}' for item in self.table_header])
-		# self.tablewidget.resizeColumnsToContents()
 		self.log_text = QPlainTextEdit()
 		self.log_text.setReadOnly(True)
 
@@ -128,44 +131,67 @@ class MainApp(QWidget):
 		layout.addWidget(self.log_text)
 		self.setLayout(layout)
 
-		self.log_text.appendPlainText("login success, 現在使用帳號: {}".format(active_account.account))
-		self.log_text.appendPlainText("抓取庫存資訊...")
+		self.print_log("login success, 現在使用帳號: {}".format(active_account.account))
+		self.print_log("建立行情連線...")
+		sdk.init_realtime() # 建立行情連線
+		self.print_log("行情連線建立OK")
+		self.reststock = sdk.marketdata.rest_client.stock
 
+		# 初始化庫存表資訊
 		self.inventories = {}
 		self.unrealized_pnl = {}
+		self.row_idx_map = {}
+		self.col_idx_map = dict(zip(self.table_header, range(len(self.table_header))))
 		self.table_init()
-		header = self.tablewidget.horizontalHeader()       
-		header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+
+		# 建立即時行情監控
+		self.subscribed_ids = {}
+		self.stock = sdk.marketdata.websocket_client.stock
+		self.stock.on('message', self.handle_message)
+		self.stock.on('connect', self.handle_connect)
+		self.stock.on('disconnect', self.handle_disconnect)
+		self.stock.on('error', self.handle_error)
+		self.stock.connect()
+
+		for key, value in self.inventories.items():
+			self.print_log("訂閱行情..."+key[0])
+			self.stock.subscribe({
+				'channel': 'trades',
+				'symbol': key[0]
+			})
+		
+		
 	
 	def table_init(self):
+		self.print_log("抓取庫存資訊...")
 		inv_res = sdk.accounting.inventories(active_account)
 		if inv_res.is_success:
-			self.log_text.appendPlainText("庫存抓取成功")
+			self.print_log("庫存抓取成功")
 			inv_data = inv_res.data
 			for inv in inv_data:
-				self.inventories[(inv.stock_no, str(inv.order_type))] = inv
+				if inv.today_qty != 0:
+					self.inventories[(inv.stock_no, str(inv.order_type))] = inv
 		else:
-			self.log_text.appendPlainText("庫存抓取失敗")
+			self.print_log("庫存抓取失敗")
 
+		self.print_log("抓取未實現損益...")
 		upnl_res = sdk.accounting.unrealized_gains_and_loses(active_account)
 		if upnl_res.is_success:
-			self.log_text.appendPlainText("未實現損益抓取成功")
+			self.print_log("未實現損益抓取成功")
 			upnl_data = upnl_res.data
 			for upnl in upnl_data:
 				self.unrealized_pnl[(upnl.stock_no, str(upnl.order_type))] = upnl
 		else:
-			self.log_text.appendPlainText("未實現損益抓取失敗")
+			self.print_log("未實現損益抓取失敗")
 
-		sdk.init_realtime() # 建立行情連線
-		self.reststock = sdk.marketdata.rest_client.stock
-
+		# 依庫存及未實現損益資訊開始填表
 		i=0
 		for key, value in self.inventories.items():
 			ticker_res = self.reststock.intraday.ticker(symbol=key[0])
 			print(ticker_res['name'])
 			row = self.tablewidget.rowCount()
 			self.tablewidget.insertRow(row)
-
+			self.row_idx_map[ticker_res['name']] = i
 			for j in range(len(self.table_header)):
 				if self.table_header[j] == '股票名稱':
 					item = QTableWidgetItem(ticker_res['name'])
@@ -193,6 +219,8 @@ class MainApp(QWidget):
 					else:
 						cur_upnl = -(self.unrealized_pnl[key].unrealized_loss)
 					item = QTableWidgetItem(str(cur_upnl))
+					# item.setForeground(QBrush(QColor(255, 0, 0)))
+					# item.setBackground(QBrush(QColor(0, 255, 0)))
 					self.tablewidget.setItem(i, j, item)
 				elif self.table_header[j] == '獲利率%':
 					cur_upnl = 0
@@ -207,10 +235,73 @@ class MainApp(QWidget):
 				
 			i+=1
 		
-		self.log_text.appendPlainText('庫存資訊初始化完成')	
+		self.print_log('庫存資訊初始化完成')
 
-		# print(self.inventories[i].stock_no)
+		# 調整股票名稱欄位寬度
+		header = self.tablewidget.horizontalHeader()       
+		header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
 
+	def closeEvent(self, event):
+        # do stuff
+		self.print_log("disconnect websocket...")
+		self.stock.disconnect()
+		can_exit = True
+		if can_exit:
+			event.accept() # let the window close
+		else:
+			event.ignore()
+
+	def handle_message(self, message):
+		msg = json.loads(message)
+		event = msg["event"]
+		data = msg["data"]
+		# print(data)
+		
+		# subscribed事件處理
+		if event == "subscribed":
+			id = data["id"]
+			symbol = data["symbol"]
+			self.print_log('訂閱成功'+symbol)
+			self.subscribed_ids[symbol] = id
+    
+		# data事件處理
+		elif event == "data":
+			symbol = data["symbol"]
+			cur_price = data["price"]
+			
+			# print(symbol, cur_price)
+			# self.print_log(str(self.row_idx_map)+str(self.col_idx_map))
+			if symbol == '00900':
+				item_s = self.tablewidget.item(0, self.col_idx_map['現價'])
+				item_s.setText(str(cur_price))
+			elif symbol=='00929':
+				item = self.tablewidget.item(1, self.col_idx_map['現價'])
+				item.setText(str(cur_price))
+			# elif symbol=='00679B':
+			# 	item_2 = self.tablewidget.item(2, self.col_idx_map['現價'])
+			# 	item_2.setText(str(cur_price))
+			# elif symbol=='00720B':
+			# 	item_3 = self.tablewidget.item(3, self.col_idx_map['現價'])
+			# 	item_3.setText(str(cur_price))
+			# elif symbol=='00933B':
+			# 	item_4 = self.tablewidget.item(4, self.col_idx_map['現價'])
+			# 	item_4.setText(str(cur_price))
+			# item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['現價'])
+			# item.setText(str(cur_price))
+			print(symbol, cur_price)
+
+	def handle_connect(self):
+		self.print_log('market data connected')
+
+	def handle_disconnect(self, code, message):
+		self.print_log(f'market data disconnect: {code}, {message}')
+
+	def handle_error(self, error):
+		self.print_log(f'market data error: {error}')
+
+	def print_log(self, log_info):
+		self.log_text.appendPlainText(log_info)
+		self.log_text.moveCursor(QTextCursor.End)
 
 sdk = FubonSDK()
 active_account = None
