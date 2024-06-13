@@ -9,6 +9,7 @@ import json
 import pandas as pd
 from pathlib import Path
 from fubon_neo.sdk import FubonSDK, Order
+from fubon_neo.constant import TimeInForce, OrderType, PriceType, MarketType, BSAction
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineEdit, QGridLayout, QVBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QPlainTextEdit
 
 from PySide6.QtGui import QBrush, QColor, QTextCursor
@@ -147,12 +148,14 @@ class MainApp(QWidget):
 		self.col_idx_map = dict(zip(self.table_header, range(len(self.table_header))))
 		self.mutex = QMutex()
 		self.table_init()
+		# self.tablewidget.hideRow(0)
 		
 		# 信號與槽
 		self.tablewidget.itemClicked[QTableWidgetItem].connect(self.onItemClicked)
 
 		# 建立即時行情監控
 		self.subscribed_ids = {}
+		sdk.set_on_filled(self.on_filled)
 		self.stock = sdk.marketdata.websocket_client.stock
 		self.stock.on('message', self.handle_message)
 		self.stock.on('connect', self.handle_connect)
@@ -284,7 +287,7 @@ class MainApp(QWidget):
 			symbol = data["symbol"]
 			cur_price = data["price"]
 			
-			# self.mutex.lock()
+			self.mutex.lock()
 
 			cur_price_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['現價'])
 			cur_price_item.setText(str(cur_price))
@@ -306,10 +309,64 @@ class MainApp(QWidget):
 			return_rate_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['獲利率%'])
 			return_rate_item.setText(str(round(return_rate+0.0000001, 2))+'%')
 			# print(return_rate)
+			# print(symbol, cur_price)
 
-			print(symbol, cur_price)
+			if symbol in self.stop_loss_dict:
+				if cur_price <= self.stop_loss_dict[symbol]:
+					self.print_log(symbol+"...停損市價單發送...")
+					sl_qty = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['庫存股數'])
+					sl_res = self.sell_market_order(symbol, sl_qty, "inv_SL")
+					if sl_res.is_success:
+						self.print_log(symbol+"...停損市價單發送成功，單號: "+sl_res.data.order_no)
+					else:
+						self.print_log(symbol+"...停損市價單發送失敗...")
+						self.print_log(sl_res.message)
 
-			# self.mutex.unlock()
+			elif symbol in self.take_profit_dict:
+				if cur_price >= self.stop_loss_dict[symbol]:
+					self.print_log(symbol+"...停利市價單發送...")
+					tp_qty = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['庫存股數'])
+					tp_res = self.sell_market_order(symbol, tp_qty, "inv_TP")
+					if tp_res.is_success:
+						self.print_log(symbol+"...停利市價單發送成功，單號: "+tp_res.data.order_no)
+					else:
+						self.print_log(symbol+"...停利市價單發送失敗...")
+						self.print_log(tp_res.message)
+					
+			self.mutex.unlock()
+
+	def sell_market_order(stock_symbol, sell_qty, sl_or_tp):
+		order = Order(
+			buy_sell = BSAction.Sell,
+			symbol = stock_symbol,
+			price =  None,
+			quantity =  int(sell_qty),
+			market_type = MarketType.Common,
+			price_type = PriceType.Market,
+			time_in_force = TimeInForce.ROD,
+			order_type = OrderType.Stock,
+			user_def = sl_or_tp # optional field
+		)
+
+		order_res = sdk.stock.place_order(active_account, order)
+		return order_res
+
+	def on_filled(self, err, content):
+		self.mutex.lock()
+		if content.user_def == "inv_SL":
+			self.print_log("停損出場 "+str(content.stock_no)+": "+content.filled_qty+"股, 成交價:"+str(content.filled_price))
+			self.stop_loss_dict.pop(content.stock_no)
+			self.take_profit_dict.pop(content.stock_no)
+			# unsubscribe and 
+			# hide table row
+		elif content.user_def == "inv_TP":
+			self.print_log("停利出場 "+str(content.stock_no)+": "+content.filled_qty+"股, 成交價:"+str(content.filled_price))
+			self.stop_loss_dict.pop(content.stock_no)
+			self.take_profit_dict.pop(content.stock_no)
+			# unsubscribe and 
+			# hide table row
+		self.mutex.unlock()
+
 
 	def handle_connect(self):
 		self.print_log('market data connected')
