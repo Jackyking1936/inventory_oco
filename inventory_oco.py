@@ -11,7 +11,8 @@ from pathlib import Path
 from fubon_neo.sdk import FubonSDK, Order
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineEdit, QGridLayout, QVBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QPlainTextEdit
 
-from PySide6.QtGui import QBrush, QColor, QFont, QTextCursor
+from PySide6.QtGui import QBrush, QColor, QTextCursor
+from PySide6.QtCore import QMutex, Qt
 
 class LoginForm(QWidget):
 	def __init__(self):
@@ -138,11 +139,17 @@ class MainApp(QWidget):
 		self.reststock = sdk.marketdata.rest_client.stock
 
 		# 初始化庫存表資訊
+		self.stop_loss_dict = {}
+		self.take_profit_dict = {}
 		self.inventories = {}
 		self.unrealized_pnl = {}
 		self.row_idx_map = {}
 		self.col_idx_map = dict(zip(self.table_header, range(len(self.table_header))))
+		self.mutex = QMutex()
 		self.table_init()
+		
+		# 信號與槽
+		self.tablewidget.itemClicked[QTableWidgetItem].connect(self.onItemClicked)
 
 		# 建立即時行情監控
 		self.subscribed_ids = {}
@@ -159,8 +166,6 @@ class MainApp(QWidget):
 				'channel': 'trades',
 				'symbol': key[0]
 			})
-		
-		
 	
 	def table_init(self):
 		self.print_log("抓取庫存資訊...")
@@ -191,7 +196,7 @@ class MainApp(QWidget):
 			print(ticker_res['name'])
 			row = self.tablewidget.rowCount()
 			self.tablewidget.insertRow(row)
-			self.row_idx_map[ticker_res['name']] = i
+			self.row_idx_map[ticker_res['symbol']] = i
 			for j in range(len(self.table_header)):
 				if self.table_header[j] == '股票名稱':
 					item = QTableWidgetItem(ticker_res['name'])
@@ -211,6 +216,16 @@ class MainApp(QWidget):
 					self.tablewidget.setItem(i, j, item)
 				elif self.table_header[j] == '現價':
 					item = QTableWidgetItem(str(ticker_res['previousClose']))
+					self.tablewidget.setItem(i, j, item)
+				elif self.table_header[j] == '停損':
+					item = QTableWidgetItem()
+					item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
+					item.setCheckState(Qt.Unchecked)
+					self.tablewidget.setItem(i, j, item)
+				elif self.table_header[j] == '停利':
+					item = QTableWidgetItem()
+					item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
+					item.setCheckState(Qt.Unchecked)
 					self.tablewidget.setItem(i, j, item)
 				elif self.table_header[j] == '損益試算':
 					cur_upnl = 0
@@ -269,26 +284,32 @@ class MainApp(QWidget):
 			symbol = data["symbol"]
 			cur_price = data["price"]
 			
-			# print(symbol, cur_price)
-			# self.print_log(str(self.row_idx_map)+str(self.col_idx_map))
-			if symbol == '00900':
-				item_s = self.tablewidget.item(0, self.col_idx_map['現價'])
-				item_s.setText(str(cur_price))
-			elif symbol=='00929':
-				item = self.tablewidget.item(1, self.col_idx_map['現價'])
-				item.setText(str(cur_price))
-			# elif symbol=='00679B':
-			# 	item_2 = self.tablewidget.item(2, self.col_idx_map['現價'])
-			# 	item_2.setText(str(cur_price))
-			# elif symbol=='00720B':
-			# 	item_3 = self.tablewidget.item(3, self.col_idx_map['現價'])
-			# 	item_3.setText(str(cur_price))
-			# elif symbol=='00933B':
-			# 	item_4 = self.tablewidget.item(4, self.col_idx_map['現價'])
-			# 	item_4.setText(str(cur_price))
-			# item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['現價'])
-			# item.setText(str(cur_price))
+			# self.mutex.lock()
+
+			cur_price_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['現價'])
+			cur_price_item.setText(str(cur_price))
+
+			avg_price_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['庫存均價'])
+			avg_price = avg_price_item.text()
+			# print(avg_price)
+
+			share_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['庫存股數'])
+			share = share_item.text()
+			# print(share)
+
+			cur_pnl = (cur_price-float(avg_price))*float(share)
+			pnl_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['損益試算'])
+			pnl_item.setText(str(int(round(cur_pnl, 0))))
+			# print(cur_pnl)
+
+			return_rate = cur_pnl/(float(avg_price)*float(share))*100
+			return_rate_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['獲利率%'])
+			return_rate_item.setText(str(round(return_rate+0.0000001, 2))+'%')
+			# print(return_rate)
+
 			print(symbol, cur_price)
+
+			# self.mutex.unlock()
 
 	def handle_connect(self):
 		self.print_log('market data connected')
@@ -302,6 +323,74 @@ class MainApp(QWidget):
 	def print_log(self, log_info):
 		self.log_text.appendPlainText(log_info)
 		self.log_text.moveCursor(QTextCursor.End)
+
+	def onItemClicked(self, item):
+		if item.checkState() == Qt.Checked:
+			# print(item.row(), item.column())
+			# 停損相關GUI設定
+			if item.column() == 6:
+				if item.flags() == Qt.ItemFlag.ItemIsEditable:
+					item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
+					item.setCheckState(Qt.Unchecked)
+					symbol = self.tablewidget.item(item.row(), self.col_idx_map['股票代號']).text()
+					self.stop_loss_dict.pop(symbol)
+					self.print_log(symbol+"...移除停損，請重新設置")
+					print("stop loss:", self.stop_loss_dict)
+					return
+				
+				item_str = item.text()
+				try:
+					item_price = float(item_str)
+				except Exception as e:
+					self.print_log(str(e))
+					self.print_log("請輸入正確價格，停損價格必須小於現價並大於0")
+					item.setCheckState(Qt.Unchecked)
+					print("stop loss:", self.stop_loss_dict)
+					return
+			
+				cur_price = self.tablewidget.item(item.row(), self.col_idx_map['現價']).text()
+				cur_price = float(cur_price)
+				if cur_price<=item_price or 0>=item_price:
+					self.print_log("請輸入正確價格，停損價格必須小於現價並大於0")
+					item.setCheckState(Qt.Unchecked)
+				else:
+					symbol = self.tablewidget.item(item.row(), self.col_idx_map['股票代號']).text()
+					self.stop_loss_dict[symbol] = item_price
+					item.setFlags(Qt.ItemIsEditable)
+					self.print_log(symbol+"...停損設定成功: "+item_str)
+				print("stop loss:", self.stop_loss_dict)
+			# 停利相關GUI設定	
+			elif item.column() == 7:
+				if item.flags() == Qt.ItemFlag.ItemIsEditable:
+					item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
+					item.setCheckState(Qt.Unchecked)
+					symbol = self.tablewidget.item(item.row(), self.col_idx_map['股票代號']).text()
+					self.take_profit_dict.pop(symbol)
+					self.print_log(symbol+"...移除停利，請重新設置")
+					print("take profit:", self.take_profit_dict)
+					return
+				
+				item_str = item.text()
+				try:
+					item_price = float(item_str)
+				except Exception as e:
+					self.print_log(str(e))
+					self.print_log("請輸入正確價格，停利價格必須大於現價")
+					item.setCheckState(Qt.Unchecked)
+					print("take profit:", self.take_profit_dict)
+					return
+			
+				cur_price = self.tablewidget.item(item.row(), self.col_idx_map['現價']).text()
+				cur_price = float(cur_price)
+				if cur_price>=item_price:
+					self.print_log("請輸入正確價格，停利價格必須大於現價")
+					item.setCheckState(Qt.Unchecked)
+				else:
+					symbol = self.tablewidget.item(item.row(), self.col_idx_map['股票代號']).text()
+					self.take_profit_dict[symbol] = item_price
+					item.setFlags(Qt.ItemIsEditable)
+					self.print_log(symbol+"...停利設定成功: "+item_str)
+				print("take profit:", self.take_profit_dict)
 
 sdk = FubonSDK()
 active_account = None
