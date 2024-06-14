@@ -104,9 +104,9 @@ class LoginForm(QWidget):
 					self.main_app = MainApp()
 					self.main_app.show()
 					
-				else:
-					msg.setText("No account match")
-					msg.exec_()
+			if active_account == None:
+				msg.setText("No account match")
+				msg.exec_()
 		else:
 			msg.setText(accounts.message)
 			msg.exec_()
@@ -309,7 +309,7 @@ class MainApp(QWidget):
 			return_rate_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['獲利率%'])
 			return_rate_item.setText(str(round(return_rate+0.0000001, 2))+'%')
 			# print(return_rate)
-			# print(symbol, cur_price)
+			print(symbol, cur_price)
 
 			if symbol in self.stop_loss_dict:
 				if cur_price <= self.stop_loss_dict[symbol]:
