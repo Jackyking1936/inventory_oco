@@ -281,6 +281,12 @@ class MainApp(QWidget):
 			symbol = data["symbol"]
 			self.print_log('訂閱成功'+symbol)
 			self.subscribed_ids[symbol] = id
+		
+		elif event == "unsubscribed":
+			for key, value in self.subscribed_ids.items():
+				if value == data["id"]:
+					self.subscribed_ids.pop(key)
+					self.print_log(key+"...成功移除訂閱")
     
 		# data事件處理
 		elif event == "data":
@@ -353,18 +359,46 @@ class MainApp(QWidget):
 
 	def on_filled(self, err, content):
 		self.mutex.lock()
-		if content.user_def == "inv_SL":
-			self.print_log("停損出場 "+str(content.stock_no)+": "+content.filled_qty+"股, 成交價:"+str(content.filled_price))
-			self.stop_loss_dict.pop(content.stock_no)
-			self.take_profit_dict.pop(content.stock_no)
-			# unsubscribe and 
-			# hide table row
-		elif content.user_def == "inv_TP":
-			self.print_log("停利出場 "+str(content.stock_no)+": "+content.filled_qty+"股, 成交價:"+str(content.filled_price))
-			self.stop_loss_dict.pop(content.stock_no)
-			self.take_profit_dict.pop(content.stock_no)
-			# unsubscribe and 
-			# hide table row
+		inv_item = self.tablewidget.item(self.row_idx_map[content.stock_no], self.col_idx_map['庫存股數'])
+		inv_qty = inv_item.text()
+		remain_qty = float(inv_qty)-float(content.filled_qty)
+		if remain_qty == 0:
+			if content.user_def == "inv_SL":
+				self.print_log("停損出場 "+content.stock_no+": "+content.filled_qty+"股, 成交價:"+str(content.filled_price))
+				# stop monitor and unsubscribe
+				self.stop_loss_dict.pop(content.stock_no)
+				self.take_profit_dict.pop(content.stock_no)
+				self.stock.unsubscribe({
+					'id':self.subscribed_ids[content.stock_no]
+				})
+				# hide table row
+				self.tablewidget.item(inv_item.row(), self.col_idx_map['停損']).setCheckState(Qt.Unchecked)
+				self.tablewidget.item(inv_item.row(), self.col_idx_map['停利']).setCheckState(Qt.Unchecked)
+				self.tablewidget.hideRow(inv_item.row())
+
+			elif content.user_def == "inv_TP":
+				self.print_log("停利出場 "+content.stock_no+": "+content.filled_qty+"股, 成交價:"+str(content.filled_price))
+				self.stop_loss_dict.pop(content.stock_no)
+				self.take_profit_dict.pop(content.stock_no)
+				# stop monitor and unsubscribe
+				self.stop_loss_dict.pop(content.stock_no)
+				self.take_profit_dict.pop(content.stock_no)
+				self.stock.unsubscribe({
+					'id':self.subscribed_ids[content.stock_no]
+				})
+				# hide table row
+				self.tablewidget.item(inv_item.row(), self.col_idx_map['停損']).setCheckState(Qt.Unchecked)
+				self.tablewidget.item(inv_item.row(), self.col_idx_map['停利']).setCheckState(Qt.Unchecked)
+				self.tablewidget.hideRow(inv_item.row())
+				
+		elif remain_qty > 0:
+			remain_qty_str = str(int(round(remain_qty, 0)))
+			if content.user_def == "inv_SL":
+				self.print_log("停損出場 "+content.stock_no+": "+content.filled_qty+"股, 成交價:"+str(content.filled_price)+", 剩餘: "+remain_qty_str+"股")
+			elif content.user_def == "inv_TP":
+				self.print_log("停利出場 "+content.stock_no+": "+content.filled_qty+"股, 成交價:"+str(content.filled_price)+", 剩餘: "+remain_qty_str+"股")
+			inv_item.setText(remain_qty_str)
+
 		self.mutex.unlock()
 
 
