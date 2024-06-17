@@ -148,13 +148,13 @@ class Communicate(QObject):
 class fake_fill_data():
 	date="2023/09/15"
 	branch_no="6460"          
-	account="26"              
+	account="123"   
 	order_no="bA422"          
 	stock_no="00900"            
 	buy_sell=BSAction.Sell              
 	filled_no="00000000001"    
 	filled_avg_price=35.2      
-	filled_qty=1000        
+	filled_qty=1000
 	filled_price=35.2          
 	order_type=OrderType.Stock          
 	filled_time="10:31:00.931"  
@@ -275,7 +275,7 @@ class MainApp(QWidget):
 		new_fake_buy.buy_sell = BSAction.Buy
 		new_fake_buy.filled_qty = 2000
 		new_fake_buy.filled_price = 17
-		new_fake_buy.account = "9809789"
+		new_fake_buy.account = active_account.account
 		self.on_filled(None, new_fake_buy)
    
 	# 測試用假裝有賣出成交的按鈕slot function
@@ -285,7 +285,7 @@ class MainApp(QWidget):
 		new_fake_sell.buy_sell = BSAction.Sell
 		new_fake_sell.filled_qty = 1000
 		new_fake_sell.filled_price = 14
-		new_fake_sell.account = "9809789"
+		new_fake_sell.account = active_account.account
 		new_fake_sell.user_def = "inv_TP"
 		self.on_filled(None, new_fake_sell)
  
