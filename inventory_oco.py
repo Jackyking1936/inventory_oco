@@ -18,8 +18,16 @@ class LoginForm(QWidget):
 
 	def __init__(self):
 		super().__init__()
+		my_icon = QIcon()
+		my_icon.addFile('inventory.ico')
+
+		self.setWindowIcon(my_icon)
 		self.setWindowTitle('Login Form')
 		self.resize(500, 200)
+		layout_all = QVBoxLayout()
+
+		label_warning = QLabel('本範例僅供教學參考，使用前請先了解相關內容')
+		layout_all.addWidget(label_warning)
 
 		layout = QGridLayout()
 
@@ -65,7 +73,9 @@ class LoginForm(QWidget):
 		button_login.clicked.connect(self.check_password)
 		layout.addWidget(button_login, 5, 0, 1, 2)
 
-		self.setLayout(layout)
+		layout_all.addLayout(layout)
+
+		self.setLayout(layout_all)
 		my_file = Path("./info.pkl")
 		if my_file.is_file():
 			with open('info.pkl', 'rb') as f:
@@ -157,7 +167,11 @@ class MainApp(QWidget):
 		# 庫存表表頭
 		self.table_header = ['股票名稱', '股票代號', '類別', '庫存股數', '庫存均價', '現價', '停損', '停利', '損益試算', '獲利率%']
 
-		self.setWindowTitle("Inventory with OCO")
+		my_icon = QIcon()
+		my_icon.addFile('inventory.ico')
+
+		self.setWindowIcon(my_icon)
+		self.setWindowTitle("庫存停損停利(僅示範現股操作)")
 		self.resize(1200, 600)
 
 		self.mutex = QMutex()
@@ -733,8 +747,11 @@ class MainApp(QWidget):
 			event.accept() # let the window close
 		else:
 			event.ignore()
- 
-sdk = FubonSDK()
+
+try:
+	sdk = FubonSDK()
+except ValueError:
+	raise ValueError("請確認網路連線")
 active_account = None
  
 if not QApplication.instance():
