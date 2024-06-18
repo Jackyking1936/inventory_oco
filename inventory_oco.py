@@ -34,6 +34,7 @@ class LoginForm(QWidget):
 		label_your_id = QLabel('Your ID:')
 		self.lineEdit_id = QLineEdit()
 		self.lineEdit_id.setPlaceholderText('Please enter your id')
+
 		layout.addWidget(label_your_id, 0, 0)
 		layout.addWidget(self.lineEdit_id, 0, 1)
 
@@ -164,9 +165,6 @@ class MainApp(QWidget):
 	def __init__(self):
 		super().__init__()
 
-		# 庫存表表頭
-		self.table_header = ['股票名稱', '股票代號', '類別', '庫存股數', '庫存均價', '現價', '停損', '停利', '損益試算', '獲利率%']
-
 		my_icon = QIcon()
 		my_icon.addFile('inventory.ico')
 
@@ -179,18 +177,15 @@ class MainApp(QWidget):
 		# 製作上下排列layout上為庫存表，下為log資訊
 		layout = QVBoxLayout()
 
+		# 庫存表表頭
+		self.table_header = ['股票名稱', '股票代號', '類別', '庫存股數', '庫存均價', '現價', '停損', '停利', '損益試算', '獲利率%']
 		self.tablewidget = QTableWidget(0, len(self.table_header))
 		self.tablewidget.setHorizontalHeaderLabels([f'{item}' for item in self.table_header])
-
+		
 		self.fake_buy = QPushButton('fake buy')
 		self.fake_sell = QPushButton('fake sell')
 		self.fake_websocket = QPushButton('fake websocket')
-		self.fake_buy.clicked.connect(self.fake_buy_filled)
-		self.fake_sell.clicked.connect(self.fake_sell_filled)
-		self.fake_websocket.clicked.connect(self.fake_ws_data)
-		self.fake_price_cnt = 0
-		self.timer = RepeatTimer(1, self.handle_message)
-	
+		
 		layoutH = QHBoxLayout()
 		layoutH.addWidget(self.fake_buy)
 		layoutH.addWidget(self.fake_sell)
@@ -198,7 +193,7 @@ class MainApp(QWidget):
 
 		self.log_text = QPlainTextEdit()
 		self.log_text.setReadOnly(True)
-		
+
 		layout.addWidget(self.tablewidget)
 		layout.addLayout(layoutH)
 		layout.addWidget(self.log_text)
@@ -218,15 +213,23 @@ class MainApp(QWidget):
 		self.row_idx_map = {}
 		self.epsilon = 0.0000001
 		self.col_idx_map = dict(zip(self.table_header, range(len(self.table_header))))
-		self.communicator = Communicate()
+		
 		self.table_init()
-		# self.tablewidget.hideRow(0)
 	   
 		# 信號與槽
+		self.timer = RepeatTimer(1, self.handle_message)
+
+		self.fake_buy.clicked.connect(self.fake_buy_filled)
+		self.fake_sell.clicked.connect(self.fake_sell_filled)
+		self.fake_websocket.clicked.connect(self.fake_ws_data)
+		self.fake_price_cnt = 0
+		
 		self.tablewidget.itemClicked[QTableWidgetItem].connect(self.onItemClicked)
+
+		self.communicator = Communicate()
 		self.communicator.update_table_signal.connect(self.table_update)
 		self.communicator.print_log_signal.connect(self.print_log)
-		self.communicator.add_new_inv_signal.connect(self.add_new_inv) #, Qt.BlockingQueuedConnection)
+		self.communicator.add_new_inv_signal.connect(self.add_new_inv)
 		self.communicator.del_row_signal.connect(self.del_table_row)
  
 		# 建立即時行情監控
@@ -437,7 +440,7 @@ class MainApp(QWidget):
 					self.inventories[(inv.stock_no, str(inv.order_type))] = inv
 		else:
 			self.print_log("庫存抓取失敗")
- 
+
 		self.print_log("抓取未實現損益...")
 		upnl_res = sdk.accounting.unrealized_gains_and_loses(active_account)
 		if upnl_res.is_success:
@@ -447,7 +450,7 @@ class MainApp(QWidget):
 				self.unrealized_pnl[(upnl.stock_no, str(upnl.order_type))] = upnl
 		else:
 			self.print_log("未實現損益抓取失敗")
- 
+
 		# 依庫存及未實現損益資訊開始填表
 		for key, value in self.inventories.items():
 			ticker_res = self.reststock.intraday.ticker(symbol=key[0])
@@ -468,9 +471,6 @@ class MainApp(QWidget):
 				elif self.table_header[j] == '庫存股數':
 					item = QTableWidgetItem(str(value.today_qty))
 					self.tablewidget.setItem(row, j, item)
-				elif self.table_header[j] == '庫存均價':
-					item = QTableWidgetItem(str(round(self.unrealized_pnl[key].cost_price+self.epsilon, 2)))
-					self.tablewidget.setItem(row, j, item)
 				elif self.table_header[j] == '現價':
 					item = QTableWidgetItem(str(ticker_res['previousClose']))
 					self.tablewidget.setItem(row, j, item)
@@ -483,6 +483,10 @@ class MainApp(QWidget):
 					item = QTableWidgetItem()
 					item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
 					item.setCheckState(Qt.Unchecked)
+					self.tablewidget.setItem(row, j, item)
+
+				elif self.table_header[j] == '庫存均價':
+					item = QTableWidgetItem(str(round(self.unrealized_pnl[key].cost_price+self.epsilon, 2)))
 					self.tablewidget.setItem(row, j, item)
 				elif self.table_header[j] == '損益試算':
 					cur_upnl = 0
@@ -502,9 +506,9 @@ class MainApp(QWidget):
 					return_rate = cur_upnl/stock_cost*100
 					item = QTableWidgetItem(str(round(return_rate+self.epsilon, 2))+'%')
 					self.tablewidget.setItem(row, j, item)
-	   
+		
 		self.print_log('庫存資訊初始化完成')
- 
+
 		# 調整股票名稱欄位寬度
 		header = self.tablewidget.horizontalHeader()      
 		header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
