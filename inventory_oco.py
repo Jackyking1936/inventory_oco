@@ -140,8 +140,8 @@ class RepeatTimer(Timer):
 # 不同 thread 和 UIthread 溝通用的signal object
 class Communicate(QObject):
 	# 定義一個帶參數的信號
-	update_table_signal = Signal(int, int, str)
 	print_log_signal = Signal(str)
+	update_table_signal = Signal(int, int, str)
 	add_new_inv_signal = Signal(str, int, float)
 	del_row_signal = Signal(int)
 
@@ -206,8 +206,6 @@ class MainApp(QWidget):
 		self.reststock = sdk.marketdata.rest_client.stock
 
 		# 初始化庫存表資訊
-		self.stop_loss_dict = {}
-		self.take_profit_dict = {}
 		self.inventories = {}
 		self.unrealized_pnl = {}
 		self.row_idx_map = {}
@@ -217,6 +215,12 @@ class MainApp(QWidget):
 		self.table_init()
 	   
 		# 信號與槽
+		self.communicator = Communicate()
+		self.communicator.print_log_signal.connect(self.print_log)
+		self.communicator.update_table_signal.connect(self.table_update)
+		self.communicator.add_new_inv_signal.connect(self.add_new_inv)
+		self.communicator.del_row_signal.connect(self.del_table_row)
+
 		self.timer = RepeatTimer(1, self.handle_message)
 
 		self.fake_buy.clicked.connect(self.fake_buy_filled)
@@ -224,32 +228,29 @@ class MainApp(QWidget):
 		self.fake_websocket.clicked.connect(self.fake_ws_data)
 		self.fake_price_cnt = 0
 		
+		self.stop_loss_dict = {}
+		self.take_profit_dict = {}
 		self.tablewidget.itemClicked[QTableWidgetItem].connect(self.onItemClicked)
-
-		self.communicator = Communicate()
-		self.communicator.update_table_signal.connect(self.table_update)
-		self.communicator.print_log_signal.connect(self.print_log)
-		self.communicator.add_new_inv_signal.connect(self.add_new_inv)
-		self.communicator.del_row_signal.connect(self.del_table_row)
  
 		# 建立即時行情監控
 		self.subscribed_ids = {}
 		self.is_ordered = []
- 
-		sdk.set_on_filled(self.on_filled)
+
 		self.stock = sdk.marketdata.websocket_client.stock
 		self.stock.on('message', self.handle_message)
 		self.stock.on('connect', self.handle_connect)
 		self.stock.on('disconnect', self.handle_disconnect)
 		self.stock.on('error', self.handle_error)
 		self.stock.connect()
- 
+
 		for key, value in self.inventories.items():
 			self.print_log("訂閱行情..."+key[0])
 			self.stock.subscribe({
 				'channel': 'trades',
 				'symbol': key[0]
 			})
+		
+		sdk.set_on_filled(self.on_filled)
  
 	### all slot function
 	# 更新最新log到QPlainTextEdit的slot function
@@ -260,16 +261,21 @@ class MainApp(QWidget):
 	# 測試用假裝有websocket data的按鈕slot function
 	def fake_ws_data(self):
 		if self.fake_price_cnt % 2==0:
-			json_template = '''{{"event":"data","data":{{"symbol":"{symbol}","type":"EQUITY","exchange":"TWSE","market":"TSE","price":{price},"size":713,"bid":16.67,"ask":16.68,"volume":8066,"isClose":true,"time":1718343000000000,"serial":9475857}},"id":"w4mkzAqYAYFKyEBLyEjmHEoNADpwKjUJmqg02G3OC9YmV","channel":"trades"}}'''
-			json_price = 15+self.fake_price_cnt
-			json_str = json_template.format(symbol='0056', price=str(json_price))
-			self.timer = RepeatTimer(1, self.handle_message, args=(json_str,))
-			# self.timer = RepeatTimer(1, self.print_log, args=(json_str,))
+			self.price_interval = 0
+			self.timer = RepeatTimer(1, self.fake_message, args=("00900", ))
 			self.timer.start()
 		else:
 			self.timer.cancel()
- 
+
 		self.fake_price_cnt+=1
+
+	def fake_message(self, stock_no):
+		self.price_interval+=1
+		json_template = '''{{"event":"data","data":{{"symbol":"{symbol}","type":"EQUITY","exchange":"TWSE","market":"TSE","price":{price},"size":713,"bid":16.67,"ask":16.68,"volume":8066,"isClose":true,"time":1718343000000000,"serial":9475857}},"id":"w4mkzAqYAYFKyEBLyEjmHEoNADpwKjUJmqg02G3OC9YmV","channel":"trades"}}'''
+		json_price = 15+self.price_interval
+		json_str = json_template.format(symbol=stock_no, price=str(json_price))
+		self.handle_message(json_str)
+
  
 	# 測試用假裝有買入成交的按鈕slot function
 	def fake_buy_filled(self):
@@ -364,7 +370,7 @@ class MainApp(QWidget):
 		if item.checkState() == Qt.Checked:
 			# print(item.row(), item.column())
 			# 停損相關GUI設定
-			if item.column() == 6:
+			if item.column() == self.col_idx_map['停損']:
 				if item.flags() == Qt.ItemFlag.ItemIsEditable:
 					item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
 					item.setCheckState(Qt.Unchecked)
@@ -373,7 +379,7 @@ class MainApp(QWidget):
 					self.print_log(symbol+"...移除停損，請重新設置")
 					print("stop loss:", self.stop_loss_dict)
 					return
-			   
+				
 				item_str = item.text()
 				try:
 					item_price = float(item_str)
@@ -383,7 +389,7 @@ class MainApp(QWidget):
 					item.setCheckState(Qt.Unchecked)
 					print("stop loss:", self.stop_loss_dict)
 					return
-		   
+			
 				cur_price = self.tablewidget.item(item.row(), self.col_idx_map['現價']).text()
 				cur_price = float(cur_price)
 				if cur_price<=item_price or 0>=item_price:
@@ -396,7 +402,7 @@ class MainApp(QWidget):
 					self.print_log(symbol+"...停損設定成功: "+item_str)
 				print("stop loss:", self.stop_loss_dict)
 			# 停利相關GUI設定
-			elif item.column() == 7:
+			elif item.column() == self.col_idx_map['停利']:
 				if item.flags() == Qt.ItemFlag.ItemIsEditable:
 					item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
 					item.setCheckState(Qt.Unchecked)
@@ -405,7 +411,7 @@ class MainApp(QWidget):
 					self.print_log(symbol+"...移除停利，請重新設置")
 					print("take profit:", self.take_profit_dict)
 					return
-			   
+				
 				item_str = item.text()
 				try:
 					item_price = float(item_str)
@@ -415,7 +421,7 @@ class MainApp(QWidget):
 					item.setCheckState(Qt.Unchecked)
 					print("take profit:", self.take_profit_dict)
 					return
-		   
+
 				cur_price = self.tablewidget.item(item.row(), self.col_idx_map['現價']).text()
 				cur_price = float(cur_price)
 				if cur_price>=item_price:
@@ -557,25 +563,25 @@ class MainApp(QWidget):
 			self.mutex.lock()
 			symbol = data["symbol"]
 			cur_price = data["price"]
-		   
+			
 			self.communicator.update_table_signal.emit(self.row_idx_map[symbol], self.col_idx_map['現價'], str(cur_price))
- 
+
 			avg_price_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['庫存均價'])
 			avg_price = avg_price_item.text()
 			# print(avg_price)
- 
+
 			share_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['庫存股數'])
 			share = share_item.text()
 			# print(share)
- 
+
 			cur_pnl = (cur_price-float(avg_price))*float(share)
 			self.communicator.update_table_signal.emit(self.row_idx_map[symbol], self.col_idx_map['損益試算'], str(int(round(cur_pnl, 0))))
 			# print(cur_pnl)
- 
+
 			return_rate = cur_pnl/(float(avg_price)*float(share))*100
 			self.communicator.update_table_signal.emit(self.row_idx_map[symbol], self.col_idx_map['獲利率%'], str(round(return_rate+self.epsilon, 2))+'%')
 			# print(return_rate)
- 
+
 			self.mutex.unlock()
 			# print(symbol, cur_price)
 		   
@@ -589,9 +595,9 @@ class MainApp(QWidget):
 					else:
 						self.communicator.print_log_signal.emit(symbol+"...停損市價單發送失敗...")
 						self.communicator.print_log_signal.emit(sl_res.message)
-				else:
+				elif symbol in self.is_ordered:
 					self.communicator.print_log_signal.emit(symbol+"...停損市價單已發送過...")
- 
+
 			if symbol in self.take_profit_dict:
 				if cur_price >= self.take_profit_dict[symbol] and symbol not in self.is_ordered:
 					self.communicator.print_log_signal.emit(symbol+"...停利市價單發送...")
@@ -602,7 +608,7 @@ class MainApp(QWidget):
 					else:
 						self.communicator.print_log_signal.emit(symbol+"...停利市價單發送失敗...")
 						self.communicator.print_log_signal.emit(tp_res.message)
-				else:
+				elif symbol in self.is_ordered:
 					self.communicator.print_log_signal.emit(symbol+"...停利市價單已發送過...")
    
 	def handle_connect(self):

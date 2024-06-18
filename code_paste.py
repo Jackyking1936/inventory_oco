@@ -11,6 +11,8 @@ from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineE
 from PySide6.QtGui import QTextCursor, QIcon
 from PySide6.QtCore import Qt, Signal, QObject, QMutex
 
+from threading import Timer
+
 class LoginForm(QWidget):
 
     def __init__(self):
@@ -133,6 +135,17 @@ class LoginForm(QWidget):
             msg.setText(accounts.message)
             msg.exec()
 
+class Communicate(QObject):
+    # 定義一個帶參數的信號
+    print_log_signal = Signal(str)
+    update_table_signal = Signal(int, int, str)
+
+# override定時執行的thread函數，用在假裝websocket data
+class RepeatTimer(Timer):
+    def run(self):
+        while not self.finished.wait(self.interval):
+            self.function(*self.args, **self.kwargs)
+
 class MainApp(QWidget):
     def __init__(self):
         super().__init__()
@@ -178,14 +191,168 @@ class MainApp(QWidget):
         self.reststock = sdk.marketdata.rest_client.stock
 
         # 初始化庫存表資訊
-        self.stop_loss_dict = {}
-        self.take_profit_dict = {}
         self.inventories = {}
         self.unrealized_pnl = {}
         self.row_idx_map = {}
         self.epsilon = 0.0000001
         self.col_idx_map = dict(zip(self.table_header, range(len(self.table_header))))
         self.table_init()
+
+        self.stop_loss_dict = {}
+        self.take_profit_dict = {}
+        self.tablewidget.itemClicked[QTableWidgetItem].connect(self.onItemClicked)
+
+        self.communicator = Communicate()
+        self.communicator.print_log_signal.connect(self.print_log)
+        self.communicator.update_table_signal.connect(self.table_update)
+
+        # 建立即時行情監控
+        self.subscribed_ids = {}
+        self.is_ordered = []
+
+        self.stock = sdk.marketdata.websocket_client.stock
+        self.stock.on('message', self.handle_message)
+        self.stock.on('connect', self.handle_connect)
+        self.stock.on('disconnect', self.handle_disconnect)
+        self.stock.on('error', self.handle_error)
+        self.stock.connect()
+
+        for key, value in self.inventories.items():
+            self.print_log("訂閱行情..."+key[0])
+            self.stock.subscribe({
+                'channel': 'trades',
+                'symbol': key[0]
+            })
+    
+    # 更新表格內某一格值的slot function
+    def table_update(self, row, col, value):
+        self.tablewidget.item(row, col).setText(value)
+
+
+    def onItemClicked(self, item):
+        if item.checkState() == Qt.Checked:
+            # print(item.row(), item.column())
+            # 停損相關GUI設定
+            if item.column() == self.col_idx_map['停損']:
+                if item.flags() == Qt.ItemFlag.ItemIsEditable:
+                    item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Unchecked)
+                    symbol = self.tablewidget.item(item.row(), self.col_idx_map['股票代號']).text()
+                    self.stop_loss_dict.pop(symbol)
+                    self.print_log(symbol+"...移除停損，請重新設置")
+                    print("stop loss:", self.stop_loss_dict)
+                    return
+                
+                item_str = item.text()
+                try:
+                    item_price = float(item_str)
+                except Exception as e:
+                    self.print_log(str(e))
+                    self.print_log("請輸入正確價格，停損價格必須小於現價並大於0")
+                    item.setCheckState(Qt.Unchecked)
+                    print("stop loss:", self.stop_loss_dict)
+                    return
+            
+                cur_price = self.tablewidget.item(item.row(), self.col_idx_map['現價']).text()
+                cur_price = float(cur_price)
+                if cur_price<=item_price or 0>=item_price:
+                    self.print_log("請輸入正確價格，停損價格必須小於現價並大於0")
+                    item.setCheckState(Qt.Unchecked)
+                else:
+                    symbol = self.tablewidget.item(item.row(), self.col_idx_map['股票代號']).text()
+                    self.stop_loss_dict[symbol] = item_price
+                    item.setFlags(Qt.ItemIsEditable)
+                    self.print_log(symbol+"...停損設定成功: "+item_str)
+                print("stop loss:", self.stop_loss_dict)
+            # 停利相關GUI設定
+            elif item.column() == self.col_idx_map['停利']:
+                if item.flags() == Qt.ItemFlag.ItemIsEditable:
+                    item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Unchecked)
+                    symbol = self.tablewidget.item(item.row(), self.col_idx_map['股票代號']).text()
+                    self.take_profit_dict.pop(symbol)
+                    self.print_log(symbol+"...移除停利，請重新設置")
+                    print("take profit:", self.take_profit_dict)
+                    return
+                
+                item_str = item.text()
+                try:
+                    item_price = float(item_str)
+                except Exception as e:
+                    self.print_log(str(e))
+                    self.print_log("請輸入正確價格，停利價格必須大於現價")
+                    item.setCheckState(Qt.Unchecked)
+                    print("take profit:", self.take_profit_dict)
+                    return
+
+                cur_price = self.tablewidget.item(item.row(), self.col_idx_map['現價']).text()
+                cur_price = float(cur_price)
+                if cur_price>=item_price:
+                    self.print_log("請輸入正確價格，停利價格必須大於現價")
+                    item.setCheckState(Qt.Unchecked)
+                else:
+                    symbol = self.tablewidget.item(item.row(), self.col_idx_map['股票代號']).text()
+                    self.take_profit_dict[symbol] = item_price
+                    item.setFlags(Qt.ItemIsEditable)
+                    self.print_log(symbol+"...停利設定成功: "+item_str)
+                print("take profit:", self.take_profit_dict)
+
+
+    def handle_message(self, message):
+        msg = json.loads(message)
+        event = msg["event"]
+        data = msg["data"]
+        print(event, data)
+        
+        # subscribed事件處理
+        if event == "subscribed":
+            id = data["id"]
+            symbol = data["symbol"]
+            self.communicator.print_log_signal.emit('訂閱成功'+symbol)
+            self.subscribed_ids[symbol] = id
+        
+        elif event == "unsubscribed":
+            for key, value in self.subscribed_ids.items():
+                if value == data["id"]:
+                    self.subscribed_ids.pop(key)
+                    self.communicator.print_log_signal.emit(key+"...成功移除訂閱")
+        # data事件處理
+        elif event == "data":
+            self.mutex.lock()
+            symbol = data["symbol"]
+            cur_price = data["price"]
+            
+            self.communicator.update_table_signal.emit(self.row_idx_map[symbol], self.col_idx_map['現價'], str(cur_price))
+
+            avg_price_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['庫存均價'])
+            avg_price = avg_price_item.text()
+            # print(avg_price)
+
+            share_item = self.tablewidget.item(self.row_idx_map[symbol], self.col_idx_map['庫存股數'])
+            share = share_item.text()
+            # print(share)
+
+            cur_pnl = (cur_price-float(avg_price))*float(share)
+            self.communicator.update_table_signal.emit(self.row_idx_map[symbol], self.col_idx_map['損益試算'], str(int(round(cur_pnl, 0))))
+            # print(cur_pnl)
+
+            return_rate = cur_pnl/(float(avg_price)*float(share))*100
+            self.communicator.update_table_signal.emit(self.row_idx_map[symbol], self.col_idx_map['獲利率%'], str(round(return_rate+self.epsilon, 2))+'%')
+            # print(return_rate)
+
+            self.mutex.unlock()
+            # print(symbol, cur_price)
+
+
+    def handle_connect(self):
+        self.communicator.print_log_signal.emit('market data connected')
+
+    def handle_disconnect(self, code, message):
+        self.communicator.print_log_signal.emit(f'market data disconnect: {code}, {message}')
+
+    def handle_error(self, error):
+        self.communicator.print_log_signal.emit(f'market data error: {error}')
+
 
     # 視窗啟動時撈取對應帳號的inventories和unrealized_pnl初始化表格
     def table_init(self):
