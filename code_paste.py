@@ -139,12 +139,32 @@ class Communicate(QObject):
     # 定義一個帶參數的信號
     print_log_signal = Signal(str)
     update_table_signal = Signal(int, int, str)
+    add_new_inv_signal = Signal(str, int, float)
+    del_row_signal = Signal(int)
+
 
 # override定時執行的thread函數，用在假裝websocket data
 class RepeatTimer(Timer):
     def run(self):
         while not self.finished.wait(self.interval):
             self.function(*self.args, **self.kwargs)
+
+# 仿FilledData的物件
+class fake_filled_data():
+    date="2023/09/15"
+    branch_no="6460"          
+    account="123"   
+    order_no="bA422"          
+    stock_no="00900"            
+    buy_sell=BSAction.Sell     
+    filled_no="00000000001"    
+    filled_avg_price=35.2      
+    filled_qty=1000
+    filled_price=35.2          
+    order_type=OrderType.Stock
+    filled_time="10:31:00.931"  
+    user_def=None
+
 
 class MainApp(QWidget):
     def __init__(self):
@@ -167,8 +187,8 @@ class MainApp(QWidget):
         self.tablewidget = QTableWidget(0, len(self.table_header))
         self.tablewidget.setHorizontalHeaderLabels([f'{item}' for item in self.table_header])
 
-        self.fake_buy = QPushButton('fake buy')
-        self.fake_sell = QPushButton('fake sell')
+        self.fake_buy = QPushButton('fake buy filled')
+        self.fake_sell = QPushButton('fake sell filled')
         self.fake_websocket = QPushButton('fake websocket')
 
         layoutH = QHBoxLayout()
@@ -202,9 +222,16 @@ class MainApp(QWidget):
         self.take_profit_dict = {}
         self.tablewidget.itemClicked[QTableWidgetItem].connect(self.onItemClicked)
 
+        self.fake_price_cnt = 0
+        self.fake_websocket.clicked.connect(self.fake_ws_data)
+        self.fake_buy.clicked.connect(self.fake_buy_filled)
+        self.fake_sell.clicked.connect(self.fake_sell_filled)
+
         self.communicator = Communicate()
         self.communicator.print_log_signal.connect(self.print_log)
         self.communicator.update_table_signal.connect(self.table_update)
+        self.communicator.add_new_inv_signal.connect(self.add_new_inv)
+        self.communicator.del_row_signal.connect(self.del_table_row)
 
         # 建立即時行情監控
         self.subscribed_ids = {}
@@ -223,7 +250,240 @@ class MainApp(QWidget):
                 'channel': 'trades',
                 'symbol': key[0]
             })
+
+    # 當有庫存歸零時刪除該列的slot function
+    def del_table_row(self, row_idx):
+        self.tablewidget.removeRow(row_idx)
+        
+        for key, value in self.row_idx_map.items():
+            if value > row_idx:
+                self.row_idx_map[key] = value-1
+            elif value == row_idx:
+                pop_idx = key
+        self.row_idx_map.pop(pop_idx)
+        print("pop inventory finish")
+
+
+    # 測試用假裝有賣出成交的按鈕slot function
+    def fake_sell_filled(self):
+        new_fake_sell = fake_filled_data()
+        new_fake_sell.stock_no = "00900"
+        new_fake_sell.buy_sell = BSAction.Sell
+        new_fake_sell.filled_qty = 1000
+        new_fake_sell.filled_price = 14
+        new_fake_sell.account = active_account.account
+        new_fake_sell.user_def = "inv_TP"
+        self.on_filled(None, new_fake_sell)
+
+
+    # 測試用假裝有買入成交的按鈕slot function
+    def fake_buy_filled(self):
+        new_fake_buy = fake_filled_data()
+        new_fake_buy.stock_no = "0050"
+        new_fake_buy.buy_sell = BSAction.Buy
+        new_fake_buy.filled_qty = 2000
+        new_fake_buy.filled_price = 17
+        new_fake_buy.account = active_account.account
+        self.on_filled(None, new_fake_buy)
     
+    # 當有成交有不在現有庫存的現股股票時新增至現有表格最下方
+    def add_new_inv(self, symbol, qty, price):
+        ticker_res = self.reststock.intraday.ticker(symbol=symbol)
+        print(ticker_res['name'])
+        row = self.tablewidget.rowCount()
+        self.tablewidget.insertRow(row)
+        
+        for j in range(len(self.table_header)):
+            if self.table_header[j] == '股票名稱':
+                item = QTableWidgetItem(ticker_res['name'])
+                self.tablewidget.setItem(row, j, item)
+            elif self.table_header[j] == '股票代號':
+                item = QTableWidgetItem(ticker_res['symbol'])
+                self.tablewidget.setItem(row, j, item)
+            elif self.table_header[j] == '類別':
+                item = QTableWidgetItem("Stock")
+                self.tablewidget.setItem(row, j, item)
+            elif self.table_header[j] == '庫存股數':
+                item = QTableWidgetItem(str(qty))
+                self.tablewidget.setItem(row, j, item)
+            elif self.table_header[j] == '庫存均價':
+                item = QTableWidgetItem(str(round(price+self.epsilon, 2)))
+                self.tablewidget.setItem(row, j, item)
+            elif self.table_header[j] == '現價':
+                item = QTableWidgetItem(str(round(price+self.epsilon, 2)))
+                self.tablewidget.setItem(row, j, item)
+            elif self.table_header[j] == '停損':
+                item = QTableWidgetItem()
+                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+                self.tablewidget.setItem(row, j, item)
+            elif self.table_header[j] == '停利':
+                item = QTableWidgetItem()
+                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled|Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+                self.tablewidget.setItem(row, j, item)
+            elif self.table_header[j] == '損益試算':
+                cur_upnl = 0
+                item = QTableWidgetItem(str(cur_upnl))
+                self.tablewidget.setItem(row, j, item)
+            elif self.table_header[j] == '獲利率%':
+                return_rate = 0
+                item = QTableWidgetItem(str(round(return_rate+self.epsilon, 2))+'%')
+                self.tablewidget.setItem(row, j, item)
+
+        self.row_idx_map[ticker_res['symbol']] = row
+        self.stock.subscribe({
+            'channel': 'trades',
+            'symbol': symbol
+        })
+
+    # 主動回報，接入成交回報後判斷 row_idx_map 要如何更新，sl 及 tp 監控列表及庫存列表是否需pop，訂閱是否加退訂
+    def on_filled(self, err, content):
+        print(content, content.stock_no)
+        if content.account == active_account.account:
+            self.mutex.lock()
+            if content.order_type == OrderType.Stock and content.filled_qty >= 1000:
+                if content.buy_sell == BSAction.Buy:
+                    # print("buy:", self.inventories)
+                    if (content.stock_no, str(content.order_type)) in self.inventories:
+                        print("already in inventories", self.row_idx_map)
+                        
+                        inv_item = self.tablewidget.item(self.row_idx_map[content.stock_no], self.col_idx_map['庫存股數'])
+                        inv_qty = int(inv_item.text())
+                        new_inv_qty = inv_qty + content.filled_qty
+                        
+                        # print(new_inv_qty)
+                        avg_item = self.tablewidget.item(self.row_idx_map[content.stock_no], self.col_idx_map['庫存均價'])
+                        avg_price = float(avg_item.text())
+                        new_avg_price = ((inv_qty*avg_price) + (content.filled_qty*content.filled_price))/new_inv_qty
+                        new_pnl = (content.filled_price-new_avg_price)*new_inv_qty
+                        new_cost = new_avg_price*new_inv_qty
+                        new_rate_return = new_pnl/new_cost*100
+
+                        # update row
+                        self.communicator.update_table_signal.emit(self.row_idx_map[content.stock_no], self.col_idx_map['庫存股數'], str(new_inv_qty))
+                        self.communicator.update_table_signal.emit(self.row_idx_map[content.stock_no], self.col_idx_map['庫存均價'], str(round(new_avg_price+self.epsilon, 2)))
+                        self.communicator.update_table_signal.emit(self.row_idx_map[content.stock_no], self.col_idx_map['現價'], str(round(content.filled_price+self.epsilon, 2)))
+                        self.communicator.update_table_signal.emit(self.row_idx_map[content.stock_no], self.col_idx_map['損益試算'], str(round(new_pnl+self.epsilon, 2)))
+                        self.communicator.update_table_signal.emit(self.row_idx_map[content.stock_no], self.col_idx_map['獲利率%'], str(round(new_rate_return+self.epsilon, 2))+"%")
+
+                    else:
+                        self.communicator.add_new_inv_signal.emit(content.stock_no, content.filled_qty, content.filled_price)
+                        self.inventories[(content.stock_no, str(content.order_type))] = content
+                        print("adding...", content.stock_no)
+                        while content.stock_no not in self.row_idx_map:
+                            # print("adding...", content.stock_no)
+                            pass
+                        print("add done")
+                elif content.buy_sell == BSAction.Sell:
+                    # print("sell:", self.inventories)
+                    if (content.stock_no, str(content.order_type)) in self.inventories:
+                        inv_item = self.tablewidget.item(self.row_idx_map[content.stock_no], self.col_idx_map['庫存股數'])
+                        inv_qty = int(inv_item.text())
+                        remain_qty = inv_qty-content.filled_qty
+                        if remain_qty > 0:
+                            remain_qty_str = str(int(round(remain_qty, 0)))
+                            if content.user_def == "inv_SL":
+                                self.communicator.print_log_signal.emit("停損出場 "+content.stock_no+": "+str(content.filled_qty)+"股, 成交價:"+str(content.filled_price)+", 剩餘: "+remain_qty_str+"股")
+                            elif content.user_def == "inv_TP":
+                                self.communicator.print_log_signal.emit("停利出場 "+content.stock_no+": "+str(content.filled_qty)+"股, 成交價:"+str(content.filled_price)+", 剩餘: "+remain_qty_str+"股")
+                            
+                            self.communicator.update_table_signal.emit(inv_item.row(), self.col_idx_map['庫存股數'], remain_qty_str)
+                            avg_item = self.tablewidget.item(self.row_idx_map[content.stock_no], self.col_idx_map['庫存均價'])
+                            avg_price = float(avg_item.text())
+                            new_pnl = (content.filled_price-avg_price)*remain_qty
+                            new_cost = avg_price*remain_qty
+                            new_rate_return = new_pnl/new_cost*100
+
+                            # update row
+                            self.communicator.update_table_signal.emit(self.row_idx_map[content.stock_no], self.col_idx_map['庫存股數'], str(remain_qty))
+                            self.communicator.update_table_signal.emit(self.row_idx_map[content.stock_no], self.col_idx_map['現價'], str(round(content.filled_price+self.epsilon, 2)))
+                            self.communicator.update_table_signal.emit(self.row_idx_map[content.stock_no], self.col_idx_map['損益試算'], str(round(new_pnl+self.epsilon, 2)))
+                            self.communicator.update_table_signal.emit(self.row_idx_map[content.stock_no], self.col_idx_map['獲利率%'], str(round(new_rate_return+self.epsilon, 2))+"%")
+                        elif remain_qty == 0:
+                            # del table row and unsubscribe
+                            self.communicator.del_row_signal.emit(self.row_idx_map[content.stock_no])
+
+                            if content.stock_no in self.stop_loss_dict:
+                                self.stop_loss_dict.pop(content.stock_no)
+                            if content.stock_no in self.take_profit_dict:
+                                self.take_profit_dict.pop(content.stock_no)
+                            if content.stock_no in self.subscribed_ids:
+                                self.stock.unsubscribe({
+                                    'id':self.subscribed_ids[content.stock_no]
+                                })
+                            
+                            if content.user_def == "inv_SL":
+                                self.communicator.print_log_signal.emit("停損出場 "+content.stock_no+": "+str(content.filled_qty)+"股, 成交價:"+str(content.filled_price))
+                            elif content.user_def == "inv_TP":
+                                self.communicator.print_log_signal.emit("停利出場 "+content.stock_no+": "+str(content.filled_qty)+"股, 成交價:"+str(content.filled_price))
+                            else:
+                                self.communicator.print_log_signal.emit("手動出場 "+content.stock_no+": "+str(content.filled_qty)+"股, 成交價:"+str(content.filled_price))
+
+                            print("deleting...")
+                            while content.stock_no in self.row_idx_map:
+                                pass
+                            print("deleting done")
+
+                            self.inventories.pop((content.stock_no, str(content.order_type)))
+                            try:
+                                self.is_ordered.remove(content.stock_no)
+                            except ValueError as v_err:
+                                print("not in is_ordered", v_err)
+
+
+            self.mutex.unlock()
+
+
+    # 視窗關閉時要做的事，主要是關websocket連結
+    def closeEvent(self, event):
+        # do stuff
+        self.print_log("disconnect websocket...")
+        self.stock.disconnect()
+        self.timer.cancel()
+        can_exit = True
+        if can_exit:
+            event.accept() # let the window close
+        else:
+            event.ignore()
+
+
+    # 停損停利用的市價單函式
+    def sell_market_order(self, stock_symbol, sell_qty, sl_or_tp):
+        order = Order(
+            buy_sell = BSAction.Sell,
+            symbol = stock_symbol,
+            price =  None,
+            quantity =  int(sell_qty),
+            market_type = MarketType.Common,
+            price_type = PriceType.Market,
+            time_in_force = TimeInForce.ROD,
+            order_type = OrderType.Stock,
+            user_def = sl_or_tp # optional field
+        )
+
+        order_res = sdk.stock.place_order(active_account, order)
+        return order_res
+
+
+    # 測試用假裝有websocket data的按鈕slot function
+    def fake_ws_data(self):
+        if self.fake_price_cnt % 2==0:
+            self.price_interval = 0
+            self.timer = RepeatTimer(1, self.fake_message, args=("00900", ))
+            self.timer.start()
+        else:
+            self.timer.cancel()
+
+        self.fake_price_cnt+=1
+
+    def fake_message(self, stock_no):
+        self.price_interval+=1
+        json_template = '''{{"event":"data","data":{{"symbol":"{symbol}","type":"EQUITY","exchange":"TWSE","market":"TSE","price":{price},"size":713,"bid":16.67,"ask":16.68,"volume":8066,"isClose":true,"time":1718343000000000,"serial":9475857}},"id":"w4mkzAqYAYFKyEBLyEjmHEoNADpwKjUJmqg02G3OC9YmV","channel":"trades"}}'''
+        json_price = 15+self.price_interval
+        json_str = json_template.format(symbol=stock_no, price=str(json_price))
+        self.handle_message(json_str)
+
     # 更新表格內某一格值的slot function
     def table_update(self, row, col, value):
         self.tablewidget.item(row, col).setText(value)
@@ -314,8 +574,10 @@ class MainApp(QWidget):
         elif event == "unsubscribed":
             for key, value in self.subscribed_ids.items():
                 if value == data["id"]:
-                    self.subscribed_ids.pop(key)
-                    self.communicator.print_log_signal.emit(key+"...成功移除訂閱")
+                    print(value)
+                    remove_key = key
+            self.subscribed_ids.pop(key)
+            self.communicator.print_log_signal.emit(key+"...成功移除訂閱")
         # data事件處理
         elif event == "data":
             self.mutex.lock()
@@ -342,6 +604,33 @@ class MainApp(QWidget):
 
             self.mutex.unlock()
             # print(symbol, cur_price)
+
+            if symbol in self.stop_loss_dict:
+                if cur_price <= self.stop_loss_dict[symbol] and symbol not in self.is_ordered:
+                    self.communicator.print_log_signal.emit(symbol+"...停損市價單發送...")
+                    sl_res = self.sell_market_order(symbol, share, "inv_SL")
+                    if sl_res.is_success:
+                        self.communicator.print_log_signal.emit(symbol+"...停損市價單發送成功，單號: "+sl_res.data.order_no)
+                        self.is_ordered.append(symbol)
+                    else:
+                        self.communicator.print_log_signal.emit(symbol+"...停損市價單發送失敗...")
+                        self.communicator.print_log_signal.emit(sl_res.message)
+                elif symbol in self.is_ordered:
+                    self.communicator.print_log_signal.emit(symbol+"...停損市價單已發送過...")
+
+            if symbol in self.take_profit_dict:
+                if cur_price >= self.take_profit_dict[symbol] and symbol not in self.is_ordered:
+                    self.communicator.print_log_signal.emit(symbol+"...停利市價單發送...")
+                    tp_res = self.sell_market_order(symbol, share, "inv_TP")
+                    if tp_res.is_success:
+                        self.communicator.print_log_signal.emit(symbol+"...停利市價單發送成功，單號: "+tp_res.data.order_no)
+                        self.is_ordered.append(symbol)
+                    else:
+                        self.communicator.print_log_signal.emit(symbol+"...停利市價單發送失敗...")
+                        self.communicator.print_log_signal.emit(tp_res.message)
+                elif symbol in self.is_ordered:
+                    self.communicator.print_log_signal.emit(symbol+"...停利市價單已發送過...")
+
 
 
     def handle_connect(self):
